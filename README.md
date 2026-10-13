@@ -1,8 +1,8 @@
 # حضور ومبيعات — بداية تطبيق آيفون
 
-هذه ملفات مصدر لنسخة تجريبية محلية، وليست تطبيقًا جاهزًا للتثبيت. لم تُجمع أو تُختبر على آيفون في هذه البيئة، لعدم توفر Xcode وiOS SDK.
+هذه ملفات مصدر لنسخة تجريبية محلية، وليست تطبيقًا جاهزًا للتثبيت. نجح تجميع نسخة المحاكي على GitHub Actions بتاريخ 2026-10-13. لم تُختبر على آيفون حقيقي بعد.
 
-لمستخدم ويندوز: اتبع START-WINDOWS.md لرفع المشروع يدويًا وتشغيل فحص التجميع على GitHub. يتضمن المجلد project.yml لإنشاء مشروع Xcode وملف .github/workflows/build.yml لفحص يدوي على ماك سحابي، دون توقيع أو نشر.
+لمستخدم ويندوز: اتبع START-WINDOWS.md لرفع المشروع يدويًا وتشغيل فحص التجميع على GitHub. يتضمن المجلد project.yml لإنشاء مشروع Xcode وملف .github/workflows/build.yml لفحص على ماك سحابي، يدويًا أو عند تغيير ملفات الكود على main، دون توقيع أو نشر.
 
 ## الموجود
 
@@ -47,3 +47,9 @@
 - https://developer.apple.com/documentation/usernotifications/untimeintervalnotificationtrigger
 - https://developer.apple.com/documentation/bundleresources/choosing-the-location-services-authorization-to-request
 - https://developer.apple.com/documentation/xcode/distributing-your-app-for-beta-testing-and-releases
+
+## نتيجة فحص البناء
+
+نجح فحص بناء نسخة المحاكي: https://github.com/ibrah1a-rgb/Log-in/actions/runs/38362743871
+
+هذا نجاح تجميع فقط، دون توقيع أو TestFlight أو اختبار ميداني لإشعارات الوصول.
