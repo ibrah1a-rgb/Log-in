@@ -1,0 +1,32 @@
+name: ShopCheck
+options:
+  deploymentTarget:
+    iOS: '17.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+targets:
+  ShopCheck:
+    type: application
+    platform: iOS
+    sources:
+      - path: ShopCheckApp.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.ShopCheck
+        TARGETED_DEVICE_FAMILY: '1'
+        MARKETING_VERSION: '0.1.0'
+        CURRENT_PROJECT_VERSION: '1'
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: حضور ومبيعات
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSLocationWhenInUseUsageDescription: نستخدم موقعك لتنبيهك عند الوصول إلى المحل؛ تسجيل الحضور يتم بعد تأكيدك.
+schemes:
+  ShopCheck:
+    build:
+      targets:
+        ShopCheck: all

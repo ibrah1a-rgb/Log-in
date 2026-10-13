@@ -1,0 +1,27 @@
+name: Check iPhone build
+'on':
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '*.swift'
+      - project.yml
+      - .github/workflows/build.yml
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install project generator
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Compile simulator app (no signing)
+        run: >-
+          xcodebuild -project ShopCheck.xcodeproj -scheme ShopCheck
+          -configuration Debug -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath build CODE_SIGNING_ALLOWED=NO build

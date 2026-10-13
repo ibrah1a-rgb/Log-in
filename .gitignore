@@ -1,0 +1,9 @@
+build/
+Generated/
+*.xcodeproj/
+*.xcuserstate
+.DS_Store
+*.p12
+*.mobileprovision
+*.p8
+.env
