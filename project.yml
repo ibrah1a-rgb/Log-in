@@ -11,6 +11,8 @@ targets:
     platform: iOS
     sources:
       - path: ShopCheckApp.swift
+      - path: Account.swift
+      - path: AccountViews.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.ShopCheck
@@ -25,6 +27,7 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         NSLocationWhenInUseUsageDescription: نستخدم موقعك لتنبيهك عند الوصول إلى المحل؛ تسجيل الحضور يتم بعد تأكيدك.
+        NSFaceIDUsageDescription: نستخدم Face ID لحماية جلسة حسابك وتسهيل تسجيل الدخول على جهازك.
 schemes:
   ShopCheck:
     build:

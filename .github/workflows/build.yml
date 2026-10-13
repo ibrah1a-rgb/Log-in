@@ -7,9 +7,18 @@ name: Check iPhone build
       - '*.swift'
       - project.yml
       - .github/workflows/build.yml
+      - 'server/**'
 permissions:
   contents: read
 jobs:
+  server-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test account permissions and shared records
+        working-directory: server
+        run: python3 -m unittest -v
   build:
     runs-on: macos-15
     timeout-minutes: 20

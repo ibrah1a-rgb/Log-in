@@ -35,34 +35,77 @@ enum InputError: LocalizedError {
     }
 }
 
-// Prototype: local records only. A name is NOT an authenticated employee identity.
+// Shared server is authoritative for identities, roles, attendance, and sales.
 @MainActor final class Store: NSObject, ObservableObject, CLLocationManagerDelegate, UNUserNotificationCenterDelegate {
     @Published var state = SavedState()
     @Published var message = ""
     @Published var busy = false
     private let center = UNUserNotificationCenter.current()
     private let location = CLLocationManager()
-    private let file = URL.documentsDirectory.appendingPathComponent("shop-check.json")
-    private var healthy = true
+    let account = Account()
 
     override init() {
         super.init()
-        do {
-            if FileManager.default.fileExists(atPath: file.path) {
-                state = try JSONDecoder().decode(SavedState.self, from: Data(contentsOf: file))
-            }
-        } catch {
-            healthy = false
-            message = "تعذر قراءة السجل. لن نكتب فوق الملف الموجود."
+        if UserDefaults.standard.object(forKey: "shopLatitude") != nil {
+            state.latitude = UserDefaults.standard.double(forKey: "shopLatitude")
+            state.longitude = UserDefaults.standard.double(forKey: "shopLongitude")
         }
         center.delegate = self
         location.delegate = self
     }
 
-    func commit(_ next: SavedState) throws {
-        guard healthy else { throw InputError.invalid("تعذر فتح السجل المحفوظ.") }
-        try JSONEncoder().encode(next).write(to: file, options: [.atomic, .completeFileProtection])
-        state = next
+    func setState(_ remote: SavedState) {
+        let lat = state.latitude, lon = state.longitude
+        state = remote
+        state.latitude = lat; state.longitude = lon
+    }
+
+    func refresh() async throws {
+        setState(try await account.refresh())
+        try await reconcileReminders()
+    }
+
+    func reconcileReminders() async throws {
+        if state.started == nil || account.user?.role != "employee" {
+            center.removePendingNotificationRequests(withIdentifiers: ["sales"])
+            if account.user?.role == "employee", state.latitude != nil { try await scheduleArrival() }
+            else { center.removePendingNotificationRequests(withIdentifiers: ["arrival"]) }
+            return
+        }
+        center.removePendingNotificationRequests(withIdentifiers: ["arrival"])
+        let pending = await center.pendingNotificationRequests()
+        if !pending.contains(where: { $0.identifier == "sales" }) { try await scheduleSales() }
+    }
+
+    func scheduleSales() async throws {
+        try await permissions()
+        let content = UNMutableNotificationContent()
+        content.title = "بعت شي؟"
+        content.body = "افتح التطبيق وسجّل المنتج والكمية والمبلغ، أو اختر ما بعت شي."
+        content.sound = .default
+        try await center.add(UNNotificationRequest(identifier: "sales", content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1800, repeats: true)))
+    }
+
+    func signedIn(_ remote: SavedState) async {
+        setState(remote)
+        let identifier = account.user?.id ?? ""
+        if UserDefaults.standard.string(forKey: "reminderAccount") != identifier {
+            center.removePendingNotificationRequests(withIdentifiers: ["sales", "arrival"])
+        }
+        UserDefaults.standard.set(identifier, forKey: "reminderAccount")
+        do { try await reconcileReminders() }
+        catch { message = "تم الدخول، لكن تفعيل الإشعارات لم يكتمل: " + error.localizedDescription }
+    }
+
+    func clearPrivateData() {
+        let lat = state.latitude, lon = state.longitude
+        state = SavedState(); state.latitude = lat; state.longitude = lon
+    }
+
+    func stopNotifications() {
+        center.removePendingNotificationRequests(withIdentifiers: ["sales", "arrival"])
+        center.removeDeliveredNotifications(withIdentifiers: ["sales", "arrival"])
     }
 
     func permissions() async throws {
@@ -80,35 +123,22 @@ enum InputError: LocalizedError {
         }
     }
 
-    func checkIn(name: String) async throws {
+    func checkIn() async throws {
         guard state.started == nil else { return }
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { throw InputError.invalid("اكتب اسم الموظف.") }
         try await permissions()
-        let content = UNMutableNotificationContent()
-        content.title = "بعت شي؟"
-        content.body = "افتح التطبيق وسجّل المنتج والكمية والمبلغ، أو اختر ما بعت شي."
-        content.sound = .default
-        try await center.add(UNNotificationRequest(identifier: "sales", content: content,
-            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1800, repeats: true)))
-        var next = state
-        next.employee = name
-        next.started = Date()
-        next.entries.insert(Entry(employee: name, kind: "حضور"), at: 0)
-        do { try commit(next) } catch {
-            center.removePendingNotificationRequests(withIdentifiers: ["sales"])
-            throw error
-        }
-        center.removePendingNotificationRequests(withIdentifiers: ["arrival"])
+        let response: StateResponse = try await account.request("/v1/check-in", method: "POST",
+            body: ["requestID": UUID().uuidString])
+        setState(response.state)
+        do { try await reconcileReminders() }
+        catch { message = "حُفظ الحضور، لكن تفعيل التذكير فشل. فعّله من الإعدادات."; return }
         message = "تم تسجيل حضورك. تذكير المبيعات كل نصف ساعة حتى تسجّل الانصراف."
     }
 
     func checkOut() async throws {
         guard state.started != nil else { return }
-        var next = state
-        next.started = nil
-        next.entries.insert(Entry(employee: state.employee, kind: "انصراف"), at: 0)
-        try commit(next)
+        let response: StateResponse = try await account.request("/v1/check-out", method: "POST",
+            body: ["requestID": UUID().uuidString])
+        setState(response.state)
         center.removePendingNotificationRequests(withIdentifiers: ["sales"])
         center.removeDeliveredNotifications(withIdentifiers: ["sales"])
         message = "تم تسجيل الانصراف وإيقاف تذكير المبيعات."
@@ -122,7 +152,7 @@ enum InputError: LocalizedError {
         }).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    func sale(product: String, quantity: String, total: String, none: Bool = false) throws {
+    func sale(product: String, quantity: String, total: String, none: Bool = false, requestID: String) async throws {
         guard state.started != nil else { throw InputError.invalid("سجّل حضورك أولًا.") }
         var entry = Entry(employee: state.employee, kind: none ? "ما بعت شي" : "بيع")
         if !none {
@@ -138,9 +168,10 @@ enum InputError: LocalizedError {
             entry.quantity = qty
             entry.halalas = NSDecimalNumber(decimal: amount * 100).intValue
         }
-        var next = state
-        next.entries.insert(entry, at: 0)
-        try commit(next)
+        let response: StateResponse = try await account.request("/v1/sales", method: "POST",
+            body: ["requestID": requestID, "product": entry.product, "quantity": entry.quantity,
+                   "halalas": entry.halalas, "none": none])
+        setState(response.state)
         message = "تم حفظ التسجيل."
     }
 
@@ -150,9 +181,9 @@ enum InputError: LocalizedError {
             throw InputError.invalid("أدخل إحداثيات المحل الصحيحة.")
         }
         try await permissions()
-        var next = state
-        next.latitude = lat; next.longitude = lon
-        try commit(next)
+        state.latitude = lat; state.longitude = lon
+        UserDefaults.standard.set(lat, forKey: "shopLatitude")
+        UserDefaults.standard.set(lon, forKey: "shopLongitude")
         if location.authorizationStatus == .notDetermined {
             message = "اسمح باستخدام الموقع لتنبيه الوصول."
             location.requestWhenInUseAuthorization()
@@ -163,7 +194,7 @@ enum InputError: LocalizedError {
     }
 
     func scheduleArrival() async throws {
-        guard state.started == nil, let lat = state.latitude, let lon = state.longitude else { return }
+        guard account.user?.role == "employee", state.started == nil, let lat = state.latitude, let lon = state.longitude else { return }
         guard location.authorizationStatus == .authorizedAlways || location.authorizationStatus == .authorizedWhenInUse else {
             throw InputError.invalid("فعّل إذن الموقع للتطبيق من إعدادات الآيفون.")
         }
@@ -195,13 +226,15 @@ enum InputError: LocalizedError {
 @main struct ShopCheckApp: App {
     @StateObject private var store = Store()
     var body: some Scene {
-        WindowGroup { Home(store: store).environment(\.layoutDirection, .rightToLeft).tint(.teal) }
+        WindowGroup { RootView(store: store, account: store.account).environment(\.layoutDirection, .rightToLeft).tint(.teal) }
     }
 }
 
 struct Home: View {
     @ObservedObject var store: Store
-    @State private var name = ""
+    @ObservedObject var account: Account
+    @State private var saleRequestID = UUID().uuidString
+    @State private var noneRequestID = UUID().uuidString
     @State private var product = ""
     @State private var quantity = "1"
     @State private var total = ""
@@ -217,8 +250,8 @@ struct Home: View {
                             Text("وقت الحضور: \(start.formatted(date: .abbreviated, time: .shortened))")
                             Button("تسجيل الانصراف", role: .destructive) { store.run { try await store.checkOut() } }
                         } else {
-                            TextField("اسم الموظف — للتجربة", text: $name)
-                            Button("تسجيل الحضور") { store.run { try await store.checkIn(name: name) } }
+                            Text(account.user?.name ?? "")
+                            Button("تسجيل الحضور") { store.run { try await store.checkIn() } }
                         }
                     }
                     if store.state.started != nil {
@@ -228,14 +261,15 @@ struct Home: View {
                             TextField("إجمالي البيع بالريال", text: $total).keyboardType(.decimalPad)
                             Button("حفظ البيع") {
                                 store.run {
-                                    try store.sale(product: product, quantity: quantity, total: total)
+                                    try await store.sale(product: product, quantity: quantity, total: total, requestID: saleRequestID)
+                                    saleRequestID = UUID().uuidString
                                     product = ""; quantity = "1"; total = ""
                                 }
                             }
-                            Button("ما بعت شي") { store.run { try store.sale(product: "", quantity: "", total: "", none: true) } }
+                            Button("ما بعت شي") { store.run { try await store.sale(product: "", quantity: "", total: "", none: true, requestID: noneRequestID); noneRequestID = UUID().uuidString } }
                         }
                     }
-                    Section { Text("نسخة تجريبية محلية. البيانات محفوظة على هذا الجهاز فقط.").font(.footnote) }
+                    Section { Text("الحضور والمبيعات مرتبطة بحسابك. تحتاج اتصالًا بالخدمة لحفظ التسجيل.").font(.footnote) }
                 }.navigationTitle("حضور ومبيعات").disabled(store.busy)
             }.tabItem { Label("دوامي", systemImage: "storefront") }
             NavigationStack {
@@ -251,7 +285,7 @@ struct Home: View {
                             Text(entry.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                }.navigationTitle("سجل هذا الجهاز")
+                }.navigationTitle("سجل حسابي").refreshable { store.run { try await store.refresh() } }
             }.tabItem { Label("السجل", systemImage: "list.bullet.rectangle") }
             NavigationStack {
                 Form {
@@ -264,7 +298,9 @@ struct Home: View {
                         Button("حفظ وتفعيل تنبيه الوصول") { store.run { try await store.configure(lat: lat, lon: lon) } }
                         Text("تنبيه تقريبي عند دخول نطاق 150 مترًا؛ تأكيد الحضور يدوي. لا يجمع التطبيق سجل تحركاتك.").font(.footnote)
                     }
+                    AccountSettings(store: store, account: account)
                     Section("الإشعارات") {
+                        Button("تحديث الحالة وتفعيل التذكير") { store.run { try await store.refresh() } }
                         Text("كل 30 دقيقة من وقت تسجيل الحضور. سجّل الانصراف لإيقافها. قد يؤخر وضع التركيز ظهور الإشعارات.")
                         Button("فتح إعدادات التطبيق") {
                             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
@@ -274,12 +310,8 @@ struct Home: View {
             }.tabItem { Label("الإعدادات", systemImage: "gearshape") }
         }
         .onAppear {
-            name = store.state.employee
             lat = String(store.state.latitude ?? ShopLocation.latitude)
             lon = String(store.state.longitude ?? ShopLocation.longitude)
         }
-        .alert("حضور ومبيعات", isPresented: Binding(get: { !store.message.isEmpty }, set: { if !$0 { store.message = "" } })) {
-            Button("تمام") { store.message = "" }
-        } message: { Text(store.message) }
     }
 }
